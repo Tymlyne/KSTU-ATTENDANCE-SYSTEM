@@ -6,15 +6,18 @@ interface LecturerDashboardProps {
   onLogout: () => void;
 }
 
-interface Course {
+interface ClassSection {
   id: string;
-  course_code: string;
-  course_name: string;
+  section_name: string;
+  courses: {
+    course_code: string;
+    course_name: string;
+  };
 }
 
 interface ActiveSession {
   id: string;
-  course_id: string;
+  section_id: string;
   current_qr_token: string;
   start_time: string;
 }
@@ -28,8 +31,8 @@ interface StudentRecord {
 }
 
 export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerName, onLogout }) => {
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [selectedCourseId, setSelectedCourseId] = useState<string>('');
+  const [sections, setSections] = useState<ClassSection[]>([]);
+  const [selectedSectionId, setSelectedSectionId] = useState<string>('');
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -38,33 +41,58 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
   const [loadingRoster, setLoadingRoster] = useState<boolean>(false);
 
   useEffect(() => {
-    fetchLecturerCourses();
+    fetchLecturerSections();
   }, []);
 
   useEffect(() => {
-    if (selectedCourseId) fetchCourseRoster(selectedCourseId);
-  }, [selectedCourseId]);
+    if (selectedSectionId) {
+      fetchSectionRoster(selectedSectionId);
+      checkActiveSessionForSection(selectedSectionId);
+    }
+  }, [selectedSectionId]);
 
-  const fetchLecturerCourses = async () => {
+  const fetchLecturerSections = async () => {
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setLoading(false); return; }
 
     const { data: profile } = await supabase.from('lecturer_profiles').select('id').eq('user_id', user.id).single();
     if (profile) {
-      const { data: courseList } = await supabase.from('courses').select('id, course_code, course_name').eq('lecturer_id', profile.id);
-      if (courseList && courseList.length > 0) {
-        setCourses(courseList);
-        setSelectedCourseId(courseList[0].id);
+      // Find courses taught by this lecturer, then get their specific sections
+      const { data: courseList } = await supabase.from('courses').select('id').eq('lecturer_id', profile.id);
+      const courseIds = courseList?.map(c => c.id) || [];
+
+      if (courseIds.length > 0) {
+        const { data: sectionList } = await supabase
+          .from('class_sections')
+          .select('id, section_name, courses(course_code, course_name)')
+          .in('course_id', courseIds);
+
+        if (sectionList && sectionList.length > 0) {
+          setSections(sectionList as any);
+          setSelectedSectionId(sectionList[0].id);
+        }
       }
     }
     setLoading(false);
   };
 
-  const fetchCourseRoster = async (courseId: string) => {
+  const checkActiveSessionForSection = async (sectionId: string) => {
+    const { data: session } = await supabase
+      .from('attendance_sessions')
+      .select('*')
+      .eq('section_id', sectionId)
+      .gt('end_time', new Date().toISOString())
+      .maybeSingle();
+
+    setActiveSession(session || null);
+    setStatusMessage('');
+  };
+
+  const fetchSectionRoster = async (sectionId: string) => {
     setLoadingRoster(true);
-    const { data: enrollments } = await supabase.from('enrollments').select('student_id, student_profiles(first_name, last_name)').eq('course_id', courseId);
-    const { data: sessions } = await supabase.from('attendance_sessions').select('id').eq('course_id', courseId);
+    const { data: enrollments } = await supabase.from('enrollments').select('student_id, student_profiles(first_name, last_name)').eq('section_id', sectionId);
+    const { data: sessions } = await supabase.from('attendance_sessions').select('id').eq('section_id', sectionId);
 
     const totalSessions = sessions?.length || 0;
     const sessionIds = sessions?.map(s => s.id) || [];
@@ -89,7 +117,6 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
     setLoadingRoster(false);
   };
 
-  // CSV Export Functionality
   const exportToCSV = () => {
     if (roster.length === 0) return;
 
@@ -107,7 +134,7 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
     
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Attendance_Report_${selectedCourseId}.csv`);
+    link.setAttribute('download', `Section_Attendance_Report_${selectedSectionId}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -121,7 +148,7 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
   };
 
   const handleStartSession = async () => {
-    if (!selectedCourseId) return;
+    if (!selectedSectionId) return;
 
     setStatusMessage('Acquiring GPS coordinates...');
     let lat = null;
@@ -140,10 +167,12 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
     const qrToken = `QR-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
     const endTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
+    const currentSection = sections.find(s => s.id === selectedSectionId);
+
     const { data: newSession, error } = await supabase
       .from('attendance_sessions')
       .insert([{ 
-        course_id: selectedCourseId, 
+        section_id: selectedSectionId,
         current_qr_token: qrToken, 
         end_time: endTime, 
         radius_meters: 50,
@@ -157,8 +186,8 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
       setStatusMessage(`Failed: ${error.message}`);
     } else if (newSession) {
       setActiveSession(newSession);
-      setStatusMessage('Live session secured with Geofencing!');
-      fetchCourseRoster(selectedCourseId);
+      setStatusMessage('Live class session secured with Geofencing!');
+      fetchSectionRoster(selectedSectionId);
     }
   };
 
@@ -173,7 +202,7 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
 
       <header className="relative z-10 px-6 py-5 flex justify-between items-center bg-white/60 backdrop-blur-xl border-b border-gray-100 sticky top-0">
         <div>
-          <h1 className="text-xl font-bold text-black tracking-tight">Portal</h1>
+          <h1 className="text-xl font-bold text-black tracking-tight">CampusGuard Portal</h1>
           <p className="text-[13px] text-gray-500 font-medium">{lecturerName}</p>
         </div>
         <button onClick={handleSignOut} className="text-[13px] font-bold text-[#FF4444] hover:text-[#D00000] transition-colors">
@@ -186,21 +215,21 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
           
           <div className="bg-white rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-            <h2 className="text-xl font-bold text-black mb-6 tracking-tight">Select Course</h2>
+            <h2 className="text-xl font-bold text-black mb-6 tracking-tight">Select Class Section</h2>
 
             {loading ? (
-              <p className="text-sm text-gray-400">Loading courses...</p>
+              <p className="text-sm text-gray-400">Loading assigned sections...</p>
             ) : (
               <div className="space-y-6">
                 <div className="relative">
                   <select
-                    value={selectedCourseId}
-                    onChange={(e) => setSelectedCourseId(e.target.value)}
+                    value={selectedSectionId}
+                    onChange={(e) => setSelectedSectionId(e.target.value)}
                     className="w-full px-6 py-[18px] bg-gray-50 border border-gray-100 rounded-full text-black text-sm focus:border-[#FF4444] focus:ring-1 focus:ring-[#FF4444] transition-all outline-none appearance-none cursor-pointer font-semibold"
                   >
-                    {courses.map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.course_code} - {course.course_name}
+                    {sections.map((sec) => (
+                      <option key={sec.id} value={sec.id}>
+                        {sec.courses.course_code}: {sec.courses.course_name} — {sec.section_name}
                       </option>
                     ))}
                   </select>
@@ -219,7 +248,7 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
                     <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
-                  Start Live Session
+                  Start Live Session for This Class
                 </button>
 
                 {statusMessage && (
@@ -236,14 +265,14 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
               <div className="text-center w-full">
                 <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-50 text-emerald-600 text-[11px] font-bold tracking-wider mb-8 uppercase">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Session Active
+                  Section Session Active
                 </div>
                 <div className="bg-[#FFF5F5] border border-[#FFEDED] rounded-3xl p-8 mb-4">
                   <div className="text-4xl md:text-5xl font-bold tracking-widest text-[#FF4444] font-mono">
                     {activeSession.current_qr_token}
                   </div>
                 </div>
-                <p className="text-[13px] text-gray-500 font-medium">Share this passcode with students.</p>
+                <p className="text-[13px] text-gray-500 font-medium">Broadcast passcode to students in this specific class.</p>
               </div>
             ) : (
               <div className="text-center text-gray-400">
@@ -252,18 +281,18 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>
-                <p className="text-[13px] font-medium">No session active</p>
+                <p className="text-[13px] font-medium">No active session for this class section</p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Course Roster Analytics */}
+        {/* Section Roster Analytics */}
         <div className="bg-white rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
           <div className="mb-6 flex justify-between items-center">
              <div>
-               <h2 className="text-xl font-bold text-black tracking-tight">Course Roster</h2>
-               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{roster.length} Enrolled</span>
+               <h2 className="text-xl font-bold text-black tracking-tight">Class Section Roster</h2>
+               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{roster.length} Students Enrolled</span>
              </div>
              {roster.length > 0 && (
                <button
@@ -273,15 +302,15 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
                  <svg className="w-4 h-4 text-[#FF4444]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                  </svg>
-                 Export CSV
+                 Export Section CSV
                </button>
              )}
           </div>
 
           {loadingRoster ? (
-            <p className="text-sm text-gray-400 text-center py-8">Fetching records...</p>
+            <p className="text-sm text-gray-400 text-center py-8">Fetching class records...</p>
           ) : roster.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">No students enrolled in this course.</p>
+            <p className="text-sm text-gray-400 text-center py-8">No students enrolled in this class section.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
@@ -298,7 +327,7 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
                       <td className="py-4 px-2 text-right">
                         <div className="flex items-center justify-end gap-3">
                           <span className="text-xs font-medium text-gray-400">
-                            {student.attended} / {student.total}
+                            {student.attended} / {student.total} Sessions
                           </span>
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-bold w-14 text-center ${
                             student.attendanceRate >= 75 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
