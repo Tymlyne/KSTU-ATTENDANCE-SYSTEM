@@ -58,7 +58,6 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
 
     const { data: profile } = await supabase.from('lecturer_profiles').select('id').eq('user_id', user.id).single();
     if (profile) {
-      // Find courses taught by this lecturer, then get their specific sections
       const { data: courseList } = await supabase.from('courses').select('id').eq('lecturer_id', profile.id);
       const courseIds = courseList?.map(c => c.id) || [];
 
@@ -166,8 +165,6 @@ export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerNa
     setStatusMessage('Generating secure session...');
     const qrToken = `QR-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
     const endTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-
-    const currentSection = sections.find(s => s.id === selectedSectionId);
 
     const { data: newSession, error } = await supabase
       .from('attendance_sessions')
