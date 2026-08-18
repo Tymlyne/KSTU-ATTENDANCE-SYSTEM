@@ -1,45 +1,34 @@
-import { useState } from 'react';
-import { LandingPage } from './pages/LandingPage';
+import React, { useState, useEffect } from 'react';
+import { StudentDashboard } from './pages/StudentDashboard';
 import { LecturerDashboard } from './pages/LecturerDashboard';
-import { StudentDashboard } from './pages/StudentDashboard'; // 1. Added Import
-import type { ActiveView, UserSession } from './types';
 
-function App() {
-  const [view, setView] = useState<ActiveView>('LANDING');
-  const [user, setUser] = useState<UserSession | null>(null);
+export function App() {
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(window.location.pathname === '/admin');
 
-  const handleLoginSuccess = (role: 'LECTURER' | 'STUDENT', name: string) => {
-    setUser({
-      email: role === 'LECTURER' ? 'lecturer@university.edu' : 'student@university.edu',
-      role,
-      name,
-    });
-    
-    if (role === 'LECTURER') {
-      setView('LECTURER_DASHBOARD');
-    } else {
-      setView('STUDENT_DASHBOARD');
-    }
+  useEffect(() => {
+    const handlePopState = () => {
+      setIsAdminRoute(window.location.pathname === '/admin');
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateToAdmin = () => {
+    window.history.pushState({}, '', '/admin');
+    setIsAdminRoute(true);
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    setView('LANDING');
+  const navigateToHome = () => {
+    window.history.pushState({}, '', '/');
+    setIsAdminRoute(false);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      {view === 'LANDING' && (
-        <LandingPage onLoginSuccess={handleLoginSuccess} />
-      )}
-
-      {view === 'LECTURER_DASHBOARD' && user && (
-        <LecturerDashboard lecturerName={user.name} onLogout={handleLogout} />
-      )}
-
-      {/* 2. Swapped static placeholder with our real StudentDashboard component */}
-      {view === 'STUDENT_DASHBOARD' && user && (
-        <StudentDashboard studentName={user.name} onLogout={handleLogout} />
+    <div className="min-h-screen bg-[#F8FAFC] selection:bg-emerald-600 selection:text-white">
+      {isAdminRoute ? (
+        <LecturerDashboard onBack={navigateToHome} />
+      ) : (
+        <StudentDashboard onOpenAdmin={navigateToAdmin} />
       )}
     </div>
   );

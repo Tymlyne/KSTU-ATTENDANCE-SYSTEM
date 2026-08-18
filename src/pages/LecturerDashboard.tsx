@@ -1,346 +1,254 @@
-import React, { useEffect, useState } from 'react';
-import { supabase } from '../config/supabaseClient';
+import React, { useState, useEffect } from 'react';
+import { AVAILABLE_COURSES } from '../data/mockData';
+import { api } from '../services/api';
+import type { AttendanceSession, AttendanceRecord } from '../data/mockData';
+import kstuLogo from '../assets/kstu_logo.png';
 
 interface LecturerDashboardProps {
-  lecturerName: string;
-  onLogout: () => void;
+  onBack: () => void;
 }
 
-interface ClassSection {
-  id: string;
-  section_name: string;
-  courses: {
-    course_code: string;
-    course_name: string;
-  };
-}
+export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ onBack }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [pinInput, setPinInput] = useState<string>('');
+  const [authError, setAuthError] = useState<string>('');
 
-interface ActiveSession {
-  id: string;
-  section_id: string;
-  current_qr_token: string;
-  start_time: string;
-}
-
-interface StudentRecord {
-  id: string;
-  name: string;
-  attendanceRate: number;
-  attended: number;
-  total: number;
-}
-
-export const LecturerDashboard: React.FC<LecturerDashboardProps> = ({ lecturerName, onLogout }) => {
-  const [sections, setSections] = useState<ClassSection[]>([]);
-  const [selectedSectionId, setSelectedSectionId] = useState<string>('');
-  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  
-  const [roster, setRoster] = useState<StudentRecord[]>([]);
-  const [loadingRoster, setLoadingRoster] = useState<boolean>(false);
+  const [selectedCourseId, setSelectedCourseId] = useState<string>('');
+  const [activeSession, setActiveSession] = useState<AttendanceSession | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string>('');
+  const [records, setRecords] = useState<AttendanceRecord[]>([]);
 
   useEffect(() => {
-    fetchLecturerSections();
+    if (AVAILABLE_COURSES.length > 0) {
+      setSelectedCourseId(AVAILABLE_COURSES[0].id);
+    }
   }, []);
 
   useEffect(() => {
-    if (selectedSectionId) {
-      fetchSectionRoster(selectedSectionId);
-      checkActiveSessionForSection(selectedSectionId);
+    if (selectedCourseId) {
+      loadSessionAndRecords(selectedCourseId);
     }
-  }, [selectedSectionId]);
+    const interval = setInterval(() => {
+      if (selectedCourseId) loadSessionAndRecords(selectedCourseId);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selectedCourseId]);
 
-  const fetchLecturerSections = async () => {
-    setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setLoading(false); return; }
+  const loadSessionAndRecords = async (courseId: string) => {
+    try {
+      const sessionRes = await api.getSession(courseId);
+      setActiveSession(sessionRes.is_open ? {
+        id: courseId,
+        courseId,
+        isOpen: true,
+        qrToken: sessionRes.qr_token,
+        latitude: sessionRes.latitude,
+        longitude: sessionRes.longitude,
+        radiusMeters: sessionRes.radius_meters
+      } : null);
 
-    const { data: profile } = await supabase.from('lecturer_profiles').select('id').eq('user_id', user.id).single();
-    if (profile) {
-      const { data: courseList } = await supabase.from('courses').select('id').eq('lecturer_id', profile.id);
-      const courseIds = courseList?.map(c => c.id) || [];
-
-      if (courseIds.length > 0) {
-        const { data: sectionList } = await supabase
-          .from('class_sections')
-          .select('id, section_name, courses(course_code, course_name)')
-          .in('course_id', courseIds);
-
-        if (sectionList && sectionList.length > 0) {
-          setSections(sectionList as any);
-          setSelectedSectionId(sectionList[0].id);
-        }
-      }
+      const recordsRes = await api.getRecords(courseId);
+      setRecords(recordsRes || []);
+    } catch (err) {
+      console.error('Failed to load data from SQLite server', err);
     }
-    setLoading(false);
   };
 
-  const checkActiveSessionForSection = async (sectionId: string) => {
-    const { data: session } = await supabase
-      .from('attendance_sessions')
-      .select('*')
-      .eq('section_id', sectionId)
-      .gt('end_time', new Date().toISOString())
-      .maybeSingle();
-
-    setActiveSession(session || null);
-    setStatusMessage('');
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pinInput === '1234') {
+      setIsAuthenticated(true);
+      setAuthError('');
+    } else {
+      setAuthError('Invalid security PIN credentials.');
+    }
   };
 
-  const fetchSectionRoster = async (sectionId: string) => {
-    setLoadingRoster(true);
-    const { data: enrollments } = await supabase.from('enrollments').select('student_id, student_profiles(first_name, last_name)').eq('section_id', sectionId);
-    const { data: sessions } = await supabase.from('attendance_sessions').select('id').eq('section_id', sectionId);
+  const triggerCSVDownload = (currentRecords: AttendanceRecord[]) => {
+    if (currentRecords.length === 0) return;
 
-    const totalSessions = sessions?.length || 0;
-    const sessionIds = sessions?.map(s => s.id) || [];
+    const courseObj = AVAILABLE_COURSES.find(c => c.id === selectedCourseId);
+    // Format name securely e.g. "COS_402_Systems_Analysis_and_Design"
+    const courseCodeStr = courseObj ? courseObj.courseCode.replace(/[^a-zA-Z0-9]/g, '_') : 'Course';
+    const dateStr = new Date().toISOString().split('T')[0];
 
-    let recordsData: any[] = [];
-    if (sessionIds.length > 0) {
-      const { data: records } = await supabase.from('attendance_records').select('student_id').in('session_id', sessionIds);
-      recordsData = records || [];
-    }
-
-    const rosterStats: StudentRecord[] = (enrollments || []).map(enrollment => {
-      const studentId = enrollment.student_id;
-      const profile = enrollment.student_profiles as any;
-      const name = `${profile.first_name} ${profile.last_name}`;
-      const attended = recordsData.filter(r => r.student_id === studentId).length;
-      const rate = totalSessions > 0 ? Math.round((attended / totalSessions) * 100) : 0;
-      return { id: studentId, name, attendanceRate: rate, attended, total: totalSessions };
+    const headers = ['Full Name', 'Index Number', 'Program & Session', 'Level', 'Program of Study', 'Course Name', 'Date', 'Time'];
+    const rows = currentRecords.map(r => {
+      const dt = new Date(r.timestamp);
+      return `"${r.fullName || ''}","${r.indexNumber || ''}","${r.programType || ''}","${r.level || ''}","${r.programOfStudy || ''}","${r.courseName || ''}","${dt.toLocaleDateString()}","${dt.toLocaleTimeString()}"`;
     });
-
-    rosterStats.sort((a, b) => a.name.localeCompare(b.name));
-    setRoster(rosterStats);
-    setLoadingRoster(false);
-  };
-
-  const exportToCSV = () => {
-    if (roster.length === 0) return;
-
-    const headers = ['Student Name', 'Classes Attended', 'Total Sessions', 'Attendance Rate (%)'];
-    const rows = roster.map(student => [
-      `"${student.name}"`,
-      student.attended,
-      student.total,
-      `"${student.attendanceRate}%"`
-    ]);
-
-    const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    
+    const csvContent = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    
     const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Section_Attendance_Report_${selectedSectionId}.csv`);
-    document.body.appendChild(link);
+    link.href = url;
+    link.download = `KsTU_Attendance_${courseCodeStr}_${dateStr}.csv`;
     link.click();
-    document.body.removeChild(link);
   };
 
-  const getLecturerLocation = (): Promise<GeolocationPosition> => {
-    return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) reject(new Error("Geolocation not supported."));
-      navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true });
-    });
-  };
-
-  const handleStartSession = async () => {
-    if (!selectedSectionId) return;
-
-    setStatusMessage('Acquiring GPS coordinates...');
-    let lat = null;
-    let lng = null;
+  const handleToggleSession = async () => {
+    const isOpen = !activeSession?.isOpen;
+    const token = `KSTU-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
     try {
-      const position = await getLecturerLocation();
-      lat = position.coords.latitude;
-      lng = position.coords.longitude;
+      if (isOpen) {
+        // Step A: Wipe old records for this course so it starts completely clean
+        setStatusMsg('Clearing old register for fresh session...');
+        await fetch(`http://localhost:5000/api/attendance/records?courseId=${selectedCourseId}`, {
+          method: 'DELETE'
+        });
+        setRecords([]);
+      } else {
+        // Step B: Auto-trigger export report dialog before closing session
+        if (records.length > 0) {
+          triggerCSVDownload(records);
+        }
+      }
+
+      setStatusMsg(isOpen ? 'Opening session...' : 'Closing session & downloading report...');
+      const res = await api.toggleSession({
+        courseId: selectedCourseId,
+        isOpen,
+        qrToken: token,
+        latitude: 6.6885,
+        longitude: -1.6244,
+        radiusMeters: 500
+      });
+
+      if (res.success) {
+        await loadSessionAndRecords(selectedCourseId);
+        setStatusMsg(isOpen ? 'Session opened. Register is clean.' : 'Session closed. File downloaded successfully.');
+      }
     } catch (err) {
-      setStatusMessage('Error: Location access required for Geofencing.');
-      return;
-    }
-
-    setStatusMessage('Generating secure session...');
-    const qrToken = `QR-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-    const endTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-
-    const { data: newSession, error } = await supabase
-      .from('attendance_sessions')
-      .insert([{ 
-        section_id: selectedSectionId,
-        current_qr_token: qrToken, 
-        end_time: endTime, 
-        radius_meters: 50,
-        latitude: lat,
-        longitude: lng
-      }])
-      .select()
-      .single();
-
-    if (error) {
-      setStatusMessage(`Failed: ${error.message}`);
-    } else if (newSession) {
-      setActiveSession(newSession);
-      setStatusMessage('Live class session secured with Geofencing!');
-      fetchSectionRoster(selectedSectionId);
+      setStatusMsg('Server connection failed.');
     }
   };
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    onLogout();
-  };
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-['Montserrat',sans-serif] flex flex-col justify-center items-center px-4">
+        <div className="w-full max-w-sm bg-white border border-slate-200 rounded-[32px] p-8 shadow-xl text-center">
+          <img src={kstuLogo} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-4 drop-shadow-sm" />
+          <h2 className="text-xl font-bold text-slate-900 mb-1">Staff Administration</h2>
+          <p className="text-xs text-slate-500 mb-6">Enter secure PIN to access management panel.</p>
+          
+          <form onSubmit={handleLogin} className="space-y-4">
+            <input
+              type="password"
+              placeholder="••••"
+              maxLength={4}
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-center text-xl tracking-[0.5em] text-emerald-700 font-bold outline-none focus:border-emerald-600 focus:bg-white"
+            />
+            <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm rounded-2xl py-3.5 shadow-lg active:scale-[0.98] transition-all">
+              Authenticate
+            </button>
+            {authError && <p className="text-xs font-semibold text-rose-600 mt-2">{authError}</p>}
+          </form>
+          <button onClick={onBack} className="mt-6 text-xs text-slate-500 hover:text-slate-800 transition-colors underline">
+            Return to Student Portal
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const courseObj = AVAILABLE_COURSES.find(c => c.id === selectedCourseId);
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] relative overflow-x-hidden font-sans flex flex-col pb-20">
-      <div className="absolute -top-[10%] -right-[10%] w-[120vw] h-[120vw] md:w-[60vw] md:h-[60vw] max-w-[800px] max-h-[800px] bg-gradient-to-bl from-[#FFEDED] via-[#FFF5F5] to-transparent rounded-full opacity-90 pointer-events-none"></div>
-
-      <header className="relative z-10 px-6 py-5 flex justify-between items-center bg-white/60 backdrop-blur-xl border-b border-gray-100 sticky top-0">
-        <div>
-          <h1 className="text-xl font-bold text-black tracking-tight">CampusGuard Portal</h1>
-          <p className="text-[13px] text-gray-500 font-medium">{lecturerName}</p>
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-['Montserrat',sans-serif] flex flex-col pb-16 antialiased">
+      <header className="px-8 py-4 flex justify-between items-center bg-white border-b border-slate-200 sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          <img src={kstuLogo} alt="Logo" className="w-9 h-9 object-contain drop-shadow-sm" />
+          <h1 className="text-sm font-bold tracking-tight text-slate-900 uppercase">Kumasi Technical University Staff Administration</h1>
         </div>
-        <button onClick={handleSignOut} className="text-[13px] font-bold text-[#FF4444] hover:text-[#D00000] transition-colors">
-          Sign out
+        <button onClick={onBack} className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors">
+          Exit Portal →
         </button>
       </header>
 
-      <main className="relative z-10 flex-1 max-w-5xl mx-auto w-full p-6 mt-4 flex flex-col gap-8">
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-          
-          <div className="bg-white rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-            <h2 className="text-xl font-bold text-black mb-6 tracking-tight">Select Class Section</h2>
+      <main className="max-w-5xl mx-auto w-full p-6 lg:p-8 mt-4 flex flex-col gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white rounded-[28px] p-6 lg:p-8 border border-slate-200 shadow-sm">
+            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Select Your Course to Manage</h2>
+            <select
+              value={selectedCourseId}
+              onChange={(e) => setSelectedCourseId(e.target.value)}
+              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold mb-6 outline-none focus:border-emerald-600 cursor-pointer"
+            >
+              {AVAILABLE_COURSES.map(c => (
+                <option key={c.id} value={c.id}>{c.level} ({c.programType}) | {c.courseCode}: {c.courseName}</option>
+              ))}
+            </select>
 
-            {loading ? (
-              <p className="text-sm text-gray-400">Loading assigned sections...</p>
-            ) : (
-              <div className="space-y-6">
-                <div className="relative">
-                  <select
-                    value={selectedSectionId}
-                    onChange={(e) => setSelectedSectionId(e.target.value)}
-                    className="w-full px-6 py-[18px] bg-gray-50 border border-gray-100 rounded-full text-black text-sm focus:border-[#FF4444] focus:ring-1 focus:ring-[#FF4444] transition-all outline-none appearance-none cursor-pointer font-semibold"
-                  >
-                    {sections.map((sec) => (
-                      <option key={sec.id} value={sec.id}>
-                        {sec.courses.course_code}: {sec.courses.course_name} — {sec.section_name}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleStartSession}
-                  className="w-full bg-[#FF4444] hover:bg-[#E63030] text-white font-semibold text-[15px] rounded-full py-4 transition-all shadow-[0_4px_14px_0_rgba(255,68,68,0.39)] active:scale-95 flex items-center justify-center gap-2"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                  Start Live Session for This Class
-                </button>
-
-                {statusMessage && (
-                  <p className="text-center text-[13px] font-bold text-[#FF4444]">
-                    {statusMessage}
-                  </p>
-                )}
-              </div>
-            )}
+            <button
+              onClick={handleToggleSession}
+              className={`w-full font-bold text-sm rounded-2xl py-4 shadow-lg active:scale-[0.98] transition-all text-white ${
+                activeSession?.isOpen ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+            >
+              {activeSession?.isOpen ? `Close Session & Save Report (${courseObj?.courseCode})` : `Open Fresh Session (${courseObj?.courseCode})`}
+            </button>
+            {statusMsg && <p className="text-center text-xs font-semibold text-slate-600 mt-3">{statusMsg}</p>}
           </div>
 
-          <div className="bg-white rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 flex flex-col items-center justify-center min-h-[280px]">
-            {activeSession ? (
-              <div className="text-center w-full">
-                <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-50 text-emerald-600 text-[11px] font-bold tracking-wider mb-8 uppercase">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Section Session Active
+          <div className="bg-white rounded-[28px] p-6 lg:p-8 border border-slate-200 shadow-sm flex flex-col justify-center items-center">
+            {activeSession?.isOpen ? (
+              <div className="text-center">
+                <span className="px-3.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold rounded-full uppercase tracking-widest mb-4 inline-block">
+                  Session Active ({courseObj?.courseCode})
+                </span>
+                <div className="text-3xl lg:text-4xl font-extrabold font-mono text-emerald-700 bg-slate-50 border border-slate-200 px-6 py-4 rounded-2xl mb-2 tracking-widest">
+                  {activeSession.qrToken}
                 </div>
-                <div className="bg-[#FFF5F5] border border-[#FFEDED] rounded-3xl p-8 mb-4">
-                  <div className="text-4xl md:text-5xl font-bold tracking-widest text-[#FF4444] font-mono">
-                    {activeSession.current_qr_token}
-                  </div>
-                </div>
-                <p className="text-[13px] text-gray-500 font-medium">Broadcast passcode to students in this specific class.</p>
+                <p className="text-xs text-slate-500">Provide this passcode to students in your class.</p>
               </div>
             ) : (
-              <div className="text-center text-gray-400">
-                <div className="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-8 h-8 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-                <p className="text-[13px] font-medium">No active session for this class section</p>
+              <div className="text-center text-slate-400">
+                <div className="w-12 h-12 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center mx-auto mb-3 text-base font-bold text-slate-400">🔒</div>
+                <p className="text-xs font-semibold text-slate-600">Session is closed for {courseObj?.courseCode}</p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Section Roster Analytics */}
-        <div className="bg-white rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-          <div className="mb-6 flex justify-between items-center">
-             <div>
-               <h2 className="text-xl font-bold text-black tracking-tight">Class Section Roster</h2>
-               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{roster.length} Students Enrolled</span>
-             </div>
-             {roster.length > 0 && (
-               <button
-                 onClick={exportToCSV}
-                 className="px-5 py-2.5 bg-gray-50 hover:bg-gray-100 text-gray-800 text-xs font-bold rounded-full border border-gray-200 transition-all flex items-center gap-2 active:scale-95"
-               >
-                 <svg className="w-4 h-4 text-[#FF4444]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                 </svg>
-                 Export Section CSV
-               </button>
-             )}
-          </div>
-
-          {loadingRoster ? (
-            <p className="text-sm text-gray-400 text-center py-8">Fetching class records...</p>
-          ) : roster.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">No students enrolled in this class section.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-gray-100">
-                    <th className="py-4 px-2 text-[11px] font-bold text-gray-400 uppercase tracking-wider">Student Name</th>
-                    <th className="py-4 px-2 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-right">Attendance Rate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {roster.map((student) => (
-                    <tr key={student.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-4 px-2 text-sm font-semibold text-gray-800">{student.name}</td>
-                      <td className="py-4 px-2 text-right">
-                        <div className="flex items-center justify-end gap-3">
-                          <span className="text-xs font-medium text-gray-400">
-                            {student.attended} / {student.total} Sessions
-                          </span>
-                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold w-14 text-center ${
-                            student.attendanceRate >= 75 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
-                          }`}>
-                            {student.attendanceRate}%
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <div className="bg-white rounded-[28px] p-6 lg:p-8 border border-slate-200 shadow-sm">
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+                Live Register for {courseObj?.courseCode}: {courseObj?.courseName}
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">{records.length} verified student submissions recorded</p>
             </div>
-          )}
-        </div>
+            {records.length > 0 && (
+              <button onClick={() => triggerCSVDownload(records)} className="px-4 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold text-emerald-700 rounded-xl hover:bg-slate-100 transition-colors">
+                Manual Export Report
+              </button>
+            )}
+          </div>
 
+          <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+            {records.map((rec, i) => {
+              const submissionDate = new Date(rec.timestamp);
+              return (
+                <div key={i} className="flex justify-between items-center p-4 bg-slate-50/80 border border-slate-100 rounded-2xl text-sm">
+                  <div>
+                    <span className="font-bold text-slate-900 text-base">{rec.fullName}</span>
+                    <div className="text-xs text-emerald-700 font-mono font-semibold mt-0.5">ID: {rec.indexNumber}</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{rec.programType} • {rec.level} • {rec.programOfStudy}</div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-slate-800 block">{submissionDate.toLocaleDateString()}</span>
+                    <span className="text-[11px] text-slate-500">{submissionDate.toLocaleTimeString()}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {records.length === 0 && <p className="text-xs text-slate-400 text-center py-10">Register is empty. Open a session and wait for student submissions.</p>}
+          </div>
+        </div>
       </main>
     </div>
   );

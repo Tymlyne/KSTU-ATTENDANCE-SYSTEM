@@ -4,4 +4,7 @@ body {
   background-color: #f8fafc;
   margin: 0;
   font-family: 'Inter', sans-serif;
+  body {
+  font-family: 'Montserrat', sans-serif;
+}
 }
