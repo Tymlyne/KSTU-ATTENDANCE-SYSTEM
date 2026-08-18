@@ -1,4 +1,4 @@
-const API_BASE_URL = `http://${window.location.hostname}:5000/api`;
+const API_BASE_URL = '/api';
 
 export const api = {
   async getSession(courseId: string) {

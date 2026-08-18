@@ -86,7 +86,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onOpenAdmin 
       async (position) => {
         await sendData(position.coords.latitude, position.coords.longitude);
       },
-      async (error) => {
+      async (_) => {
         // Fallback: If Safari blocks or fails GPS permission, bypass the block 
         // with default KsTU coordinates so your presentation/testing never gets stuck!
         console.warn('Geolocation blocked/failed by browser. Using default campus coordinates fallback.');

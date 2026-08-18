@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { StudentDashboard } from './pages/StudentDashboard';
 import { LecturerDashboard } from './pages/LecturerDashboard';
 
